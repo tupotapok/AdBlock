@@ -1,0 +1,68 @@
+name: Build AdBlock SRS Rule-set
+
+on:
+  schedule:
+    - cron: '0 2 * * 1' # Запуск каждый понедельник в 02:00
+  workflow_dispatch: # Кнопка ручного запуска
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install sing-box
+        run: |
+          bash <(curl -fsSL https://sing-box.app/deb-install.sh)
+          sing-box version
+
+      - name: Download and prepare domain lists
+        run: |
+          # 1. Скачиваем готовые списки доменов
+          curl -sSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt > raw_ads.txt
+          curl -sSL https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/category-ads-all >> raw_ads.txt
+          
+          # 2. Скачиваем StevenBlack hosts и оставляем только домены (убираем 0.0.0.0 и комментарии)
+          curl -sSL https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts | awk '$1 == "0.0.0.0" {print $2}' >> raw_ads.txt
+          
+          # 3. Чистим, сортируем и удаляем дубликаты
+          cat raw_ads.txt | grep -v '^#' | grep -v '^$' | sort -u > merged_domains.txt
+
+      - name: Convert to sing-box JSON
+        run: |
+          python -c "
+          import json
+          
+          with open('merged_domains.txt', 'r') as f:
+              domains = [line.strip() for line in f if line.strip()]
+          
+          rule_set = {
+              'version': 1,
+              'rules': [
+                  {
+                      'domain_suffix': domains
+                  }
+              ]
+          }
+          
+          with open('ads-filter.json', 'w') as f:
+              json.dump(rule_set, f, indent=2)
+          "
+
+      - name: Compile to SRS
+        run: |
+          sing-box rule-set compile ads-filter.json -o ads-filter.srs
+
+      - name: Commit and Push
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git add ads-filter.json ads-filter.srs
+          git commit -m "Auto-update AdBlock ruleset" || echo "No changes to commit"
+          git push
